@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { getToken } from '../utils/storage';
 import {
   View,
   Text,
@@ -7,10 +8,18 @@ import {
   ScrollView,
   TouchableOpacity,
   Share,
+  Linking,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+
+const BASE_URL = 'http://172.20.10.5:3000';
 
 export default function ResultScreen({ route, navigation }) {
   const { inspection } = route.params;
+  const [downloading, setDownloading] = useState(false);
 
   const isAccepted = inspection.recommendation === 'accept';
   const isRejected = inspection.recommendation === 'reject';
@@ -34,30 +43,67 @@ export default function ResultScreen({ route, navigation }) {
     return '⚠ MANUAL REVIEW';
   };
 
-  const handleShare = async () => {
-    const defectList = inspection.defects
-      ? Object.entries(inspection.defects)
-          .map(([k, v]) => `${k}: ${v}`)
-          .join('\n')
+  const downloadAndSharePDF = async () => {
+    setDownloading(true);
+    try {
+      const token = await getToken();
+      const pdfUrl = `${BASE_URL}/api/reports/${inspection.id}/pdf`;
+      const fileUri = FileSystem.documentDirectory + `inspection-${inspection.id}.pdf`;
+
+      const downloadResult = await FileSystem.downloadAsync(pdfUrl, fileUri, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (downloadResult.status === 200) {
+        await Sharing.shareAsync(downloadResult.uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: 'Share Inspection Report',
+        });
+      } else {
+        Alert.alert('Error', 'Failed to download report');
+      }
+    } catch (err) {
+      Alert.alert('Error', 'Could not generate PDF report');
+      console.error(err);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const shareViaWhatsApp = async () => {
+    const defectList = inspection.defects && inspection.defects.length > 0
+      ? inspection.defects.map((d, i) =>
+          `${i + 1}. ${d.type} (${Math.round(d.confidence * 100)}% confidence)`
+        ).join('\n')
       : 'No defects detected';
 
     const message = `
-INSPECTION REPORT
------------------
-Part: ${inspection.part_name || 'N/A'}
-Date: ${new Date(inspection.created_at).toLocaleString()}
-Recommendation: ${getRecommendationText()}
-Severity: ${inspection.severity || 'N/A'}
-Confidence: ${inspection.confidence_score ? `${Math.round(inspection.confidence_score * 100)}%` : 'N/A'}
+*INSPECTION REPORT*
+━━━━━━━━━━━━━━━━━━
+*Part:* ${inspection.part_name || 'N/A'}
+*Date:* ${new Date(inspection.created_at).toLocaleString()}
+*Recommendation:* ${getRecommendationText()}
+*Severity:* ${(inspection.severity || 'N/A').toUpperCase()}
+*Confidence:* ${inspection.confidence_score ? `${Math.round(inspection.confidence_score * 100)}%` : 'N/A'}
 
-Defects:
+*Defects Found:*
 ${defectList}
 
-Notes: ${inspection.notes || 'None'}
-Image: ${inspection.image_url}
+*Notes:* ${inspection.notes || 'None'}
+*Image:* ${inspection.image_url}
+━━━━━━━━━━━━━━━━━━
+_AI-Based Automotive Inspection System_
     `.trim();
 
-    await Share.share({ message });
+    const whatsappUrl = `whatsapp://send?text=${encodeURIComponent(message)}`;
+    const canOpen = await Linking.canOpenURL(whatsappUrl);
+
+    if (canOpen) {
+      await Linking.openURL(whatsappUrl);
+    } else {
+      // Fallback to general share if WhatsApp not installed
+      await Share.share({ message });
+    }
   };
 
   return (
@@ -69,17 +115,12 @@ Image: ${inspection.image_url}
           <Text style={styles.back}>← Back</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Inspection Result</Text>
-        <TouchableOpacity onPress={handleShare}>
-          <Text style={styles.share}>Share</Text>
-        </TouchableOpacity>
+        <View style={{ width: 40 }} />
       </View>
 
       {/* Part Image */}
       {inspection.image_url && (
-        <Image
-          source={{ uri: inspection.image_url }}
-          style={styles.image}
-        />
+        <Image source={{ uri: inspection.image_url }} style={styles.image} />
       )}
 
       {/* Recommendation Badge */}
@@ -103,7 +144,7 @@ Image: ${inspection.image_url}
         <Text style={styles.cardTitle}>AI Analysis</Text>
         <Row
           label="Severity"
-          value={inspection.severity || 'Pending AI'}
+          value={(inspection.severity || 'Pending AI').toUpperCase()}
           valueColor={getSeverityColor(inspection.severity)}
         />
         <Row
@@ -114,22 +155,48 @@ Image: ${inspection.image_url}
               : 'Pending AI'
           }
         />
-        {inspection.defects && (
+        {inspection.defects && inspection.defects.length > 0 && (
           <View style={styles.defectList}>
             <Text style={styles.defectTitle}>Detected Defects</Text>
-            {Object.entries(inspection.defects).map(([key, value]) => (
-              <View key={key} style={styles.defectItem}>
-                <Text style={styles.defectKey}>{key}</Text>
-                <Text style={styles.defectValue}>{value}</Text>
+            {inspection.defects.map((defect, index) => (
+              <View key={index} style={styles.defectItem}>
+                <Text style={styles.defectKey}>{defect.type}</Text>
+                <Text style={styles.defectValue}>
+                  {Math.round(defect.confidence * 100)}% confidence
+                </Text>
               </View>
             ))}
           </View>
         )}
-        {!inspection.defects && (
+        {(!inspection.defects || inspection.defects.length === 0) && (
           <Text style={styles.pendingText}>
-            AI analysis will appear here once the model is connected in Phase 3.
+            No defects detected by AI.
           </Text>
         )}
+      </View>
+
+      {/* Share Buttons */}
+      <View style={styles.shareCard}>
+        <Text style={styles.cardTitle}>Share Report</Text>
+
+        <TouchableOpacity
+          style={styles.whatsappButton}
+          onPress={shareViaWhatsApp}
+        >
+          <Text style={styles.whatsappText}>📱  Share via WhatsApp</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.pdfButton, downloading && styles.buttonDisabled]}
+          onPress={downloadAndSharePDF}
+          disabled={downloading}
+        >
+          {downloading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.pdfText}>📄  Download PDF Report</Text>
+          )}
+        </TouchableOpacity>
       </View>
 
       {/* Actions */}
@@ -186,11 +253,6 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
   },
-  share: {
-    color: '#2563EB',
-    fontSize: 15,
-    fontWeight: '600',
-  },
   image: {
     width: '100%',
     height: 220,
@@ -211,6 +273,14 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   card: {
+    backgroundColor: '#111',
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#222',
+    marginBottom: 16,
+  },
+  shareCard: {
     backgroundColor: '#111',
     borderRadius: 16,
     padding: 20,
@@ -275,12 +345,39 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginTop: 8,
   },
+  whatsappButton: {
+    backgroundColor: '#25D366',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  whatsappText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  pdfButton: {
+    backgroundColor: '#E53E3E',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+  },
+  pdfText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
   newButton: {
     backgroundColor: '#2563EB',
     borderRadius: 12,
     padding: 18,
     alignItems: 'center',
     marginBottom: 12,
+    marginTop: 16,
   },
   newButtonText: {
     color: '#fff',

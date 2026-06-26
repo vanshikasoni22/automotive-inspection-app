@@ -1,8 +1,7 @@
 import axios from 'axios';
 import { getToken } from '../utils/storage';
 
-const BASE_URL = 'http://172.20.10.5:3000';
-
+const BASE_URL = 'https://automotive-inspection-api.railway.app';
 const api = axios.create({
   baseURL: BASE_URL,
 });
