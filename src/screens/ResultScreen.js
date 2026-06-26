@@ -15,7 +15,7 @@ import {
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
-const BASE_URL = 'http://172.20.10.5:3000';
+const BASE_URL = 'https://automotive-inspection-api.onrender.com';
 
 export default function ResultScreen({ route, navigation }) {
   const { inspection } = route.params;
